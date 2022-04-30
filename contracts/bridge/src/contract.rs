@@ -4,7 +4,7 @@ use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response,
 use cw2::set_contract_version;
 
 use crate::error::ContractError;
-use crate::msg::{CountResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
+use crate::msg::{CountResponse, ExecuteMsg, InstantiateMsg, QueryMsg, UnshieldRequest};
 use crate::state::{State, STATE};
 
 // version info for migration info
@@ -39,12 +39,12 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Increment {} => try_increment(deps),
-        ExecuteMsg::Reset { count } => try_reset(deps, info, count),
+        ExecuteMsg::Deposit { incognitoAddr, token, amount } => try_deposit(deps),
+        ExecuteMsg::Withdraw { proof } => try_withdraw(deps, info,proof),
     }
 }
 
-pub fn try_increment(deps: DepsMut) -> Result<Response, ContractError> {
+pub fn try_deposit(deps: DepsMut) -> Result<Response, ContractError> {
     STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
         state.count += 1;
         Ok(state)
@@ -52,7 +52,7 @@ pub fn try_increment(deps: DepsMut) -> Result<Response, ContractError> {
 
     Ok(Response::new().add_attribute("method", "try_increment"))
 }
-pub fn try_reset(deps: DepsMut, info: MessageInfo, count: i32) -> Result<Response, ContractError> {
+pub fn try_withdraw(deps: DepsMut, info: MessageInfo, proof UnshieldRequest) -> Result<Response, ContractError> {
     STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
         if info.sender != state.owner {
             return Err(ContractError::Unauthorized {});
