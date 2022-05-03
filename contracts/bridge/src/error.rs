@@ -8,6 +8,31 @@ pub enum ContractError {
 
     #[error("Unauthorized")]
     Unauthorized {},
-    // Add any other custom errors you like here.
-    // Look at https://docs.rs/thiserror/1.0.21/thiserror/ for details.
+
+    #[error("Wrong token type")]
+    WrongTokenType(String),
+
+    #[error("Only one native token deposit at a time")]
+    OneTokenAtATime{},
+
+    #[error("No funds")]
+    NoFunds {},
+
+    #[error("Invalid beacon instruction")]
+    InvalidBeaconInstruction {},
+
+    #[error("Invalid key instruction")]
+    InvalidKeysInInstruction {},
+
+    #[error("Mismatch keys and indexes")]
+    InvalidKeysAndIndexes {},
+
+    #[error("Invalid number of signature")]
+    InvalidNumberOfSignature {},
+
+    #[error("Invalid beacon signature")]
+    InvalidBeaconSignature {},
+
+    #[error("Invalid beacon merkle tree")]
+    InvalidBeaconMerkleTree {},
 }

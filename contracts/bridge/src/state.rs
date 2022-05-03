@@ -1,13 +1,8 @@
-use schemars::JsonSchema;
+use schemars::{JsonSchema};
 use serde::{Deserialize, Serialize};
 
-use cosmwasm_std::Addr;
-use cw_storage_plus::Item;
+use cosmwasm_std::{Uint128};
+use cw_storage_plus::{Map};
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct State {
-    pub count: i32,
-    pub owner: Addr,
-}
-
-pub const STATE: Item<State> = Item::new("state");
+pub const BEACONS: Map<Uint128, Vec<[u8; 64]>> = Map::new("beacons");
+pub const BURNTX: Map<&[u8; 32], bool> = Map::new("burntx");
