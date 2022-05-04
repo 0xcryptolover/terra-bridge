@@ -1,11 +1,11 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, DepsMut, Env, MessageInfo, Response, from_slice, SubMsg, WasmMsg, coins, BankMsg, Uint256, StdResult};
+use cosmwasm_std::{to_binary, DepsMut, Env, MessageInfo, Response, from_slice, SubMsg, WasmMsg, coins, BankMsg, Uint256, StdResult, Deps, Binary};
 use cosmwasm_std::{Addr, Uint128};
 use cw2::{set_contract_version};
 use std::convert::{TryFrom};
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, ReceiveMsg, UnshieldRequest};
+use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, QueryMsg, ReceiveMsg, TxBurnResponse, UnshieldRequest};
 use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
 use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
 use arrayref::{array_refs, array_ref};
@@ -301,19 +301,44 @@ fn get_beacons(deps: &DepsMut, height: Uint128) -> Result<Vec<String>, ContractE
     Ok(BEACONS.may_load(deps.storage, &r.to_be_bytes()[..])?.unwrap_or_default())
 }
 
+/// queries
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
+    match msg {
+        QueryMsg::GetBeacons {index} => to_binary(&query_beacon(deps, index)?),
+        QueryMsg::CheckTxBurn {burnid} => to_binary(&query_tx_burn(deps, burnid.as_str())?),
+    }
+}
+
+// get beacon by height
+pub fn query_beacon(deps: Deps, index: Uint128) -> StdResult<BeaconResponse> {
+    let heights = BEACON_HEIGHTS.may_load(deps.storage)?.unwrap_or_default();
+    let mut beacons: Vec<String> = vec![];
+    let mut height: Uint128 = Uint128::new(0);
+    let index_usize = index.u128() as usize;
+    if index_usize < heights.len() {
+        height = heights[index_usize];
+        beacons = BEACONS.may_load(deps.storage, height.to_be_bytes().as_ref())?.unwrap_or_default();
+    }
+
+    Ok(BeaconResponse { beacons, height })
+}
+
+// get burn txid is used
+pub fn query_tx_burn(deps: Deps, txburn: &str) -> StdResult<TxBurnResponse> {
+    let res = BURNTX.may_load(deps.storage, txburn)?.unwrap_or_default();
+    Ok(TxBurnResponse { is_used: res })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
     use cosmwasm_std::{
         coin, from_slice, CosmosMsg, OverflowError, OverflowOperation, StdError, Storage,
     };
     use cw20::Denom;
-    use cw4::{member_key, TOTAL_KEY};
-    use cw_controllers::{AdminError, Claim, HookError};
-    use cw_utils::Duration;
-
     use crate::error::ContractError;
-
     use super::*;
 
     const INIT_ADMIN: &str = "juan";
@@ -326,14 +351,16 @@ mod tests {
     const UNBONDING_BLOCKS: u64 = 100;
     const CW20_ADDRESS: &str = "wasm1234567890";
 
-    // fn default_instantiate(deps: DepsMut) {
-    //     do_instantiate(
-    //         deps,
-    //         TOKENS_PER_WEIGHT,
-    //         MIN_BOND,
-    //         Duration::Height(UNBONDING_BLOCKS),
-    //     )
-    // }
+    fn default_instantiate(deps: DepsMut) {
+        let msg = InstantiateMsg {
+            committees: vec!["beacon1".to_string(), "beacon2".to_string()],
+            height: Uint128::new(0)
+        };
+        let info = mock_info("creator", &[]);
+        instantiate(deps, mock_env(), info, msg).unwrap();
+    }
+
+
     //
     // #[test]
     // fn proper_initialization() {

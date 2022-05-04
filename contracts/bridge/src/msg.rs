@@ -24,13 +24,6 @@ pub enum ExecuteMsg {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum QueryMsg {
-    /// GetCount returns the current count as a json-encoded number
-    GetCount {},
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub enum ReceiveMsg {
     /// Only valid cw20 message is to shield cw20 token
     Deposit {},
@@ -57,4 +50,28 @@ pub struct UnshieldRequest {
     pub signatures: Vec<String>,
     // v value
     pub vs: Vec<u8>
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryMsg {
+    /// Return list beacon by height. Returns BeaconResponse
+    GetBeacons {
+        index: Uint128
+    },
+    /// Return the tx burn is already used or not. Return TxBurnResponse
+    CheckTxBurn {
+        burnid: String
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct BeaconResponse {
+    pub beacons: Vec<String>,
+    pub height: Uint128,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct TxBurnResponse {
+    pub is_used: u8,
 }
