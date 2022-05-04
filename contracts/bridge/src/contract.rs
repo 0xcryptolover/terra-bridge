@@ -1,13 +1,11 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, from_slice, SubMsg, WasmMsg, coins, BankMsg, Uint256};
+use cosmwasm_std::{to_binary, DepsMut, Env, MessageInfo, Response, from_slice, SubMsg, WasmMsg, coins, BankMsg, Uint256, StdResult};
 use cosmwasm_std::{Addr, Uint128};
 use cw2::{set_contract_version};
-use std::borrow::Borrow;
-use std::convert::{TryFrom, TryInto};
-use std::ops::Add;
+use std::convert::{TryFrom};
 use crate::error::ContractError;
-use crate::msg::{CountResponse, ExecuteMsg, InstantiateMsg, QueryMsg, ReceiveMsg, UnshieldRequest};
+use crate::msg::{ExecuteMsg, InstantiateMsg, ReceiveMsg, UnshieldRequest};
 use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
 use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
 use arrayref::{array_refs, array_ref};
@@ -27,15 +25,13 @@ pub fn instantiate(
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(u128(0)));
-    BEACONS.save(deps.storage, msg.height, msg.committees.as_ref());
+    TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(0));
+    BEACONS.save(deps.storage, msg.height, &msg.committees);
     BEACON_HEIGHTS.save(deps.storage, &vec![msg.height]);
-
     Ok(Response::new()
        .add_attribute("method", "instantiate")
        .add_attribute("owner", info.sender)
-       .add_attribute("committees", msg.committees.clone())
-       .add_attribute("heights", msg.height.clone()))
+       .add_attribute("heights", msg.height))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -47,8 +43,8 @@ pub fn execute(
 ) -> Result<Response, ContractError> {
     match msg {
         ExecuteMsg::Deposit { incognitoAddr } => try_deposit(deps, Balance::from(info.funds), incognitoAddr),
-        ExecuteMsg::Withdraw { proof } => try_withdraw(deps, info, proof),
-        ExecuteMsg::Receive(msg) => execute_receive(deps, env, info, msg),
+        ExecuteMsg::Withdraw { proof } => try_withdraw(deps, proof),
+        ExecuteMsg::Receive(msg) => execute_receive(deps, _env, info, msg),
     }
 }
 
@@ -57,26 +53,30 @@ pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<
     let (token, amount) = match &amount {
         Balance::Native(have) => {
             match have.0.len() {
-                0 => Err(ContractError::NoFunds),
+                0 => Err(ContractError::NoFunds {}),
                 1 => {
                     let balance = &have.0[0];
-                    let mut ptoken_id = NATIVE_TOKENS.may_load(deps.storage, balance.clone().denom)?.unwrap_or_default();
+                    let mut ptoken_id = NATIVE_TOKENS.may_load(deps.storage, &balance.clone().denom)?.unwrap_or_default();
                     // check native token existed
                     if ptoken_id == "" {
                         let total_native = TOTAL_NATIVE_TOKENS.may_load(deps.storage)?.unwrap_or_default();
                         ptoken_id = hex::encode(Uint256::from(total_native.u128()).to_be_bytes());
-                        NATIVE_TOKENS.update(deps.storage, balance.clone().denom, ptoken_id)?;
-                        TOTAL_NATIVE_TOKENS.update(deps.storage, total_native.add(1))?;
+                        NATIVE_TOKENS.update(deps.storage, &balance.clone().denom, |_| -> StdResult<_> {
+                            Ok(ptoken_id)
+                        })?;
+                        TOTAL_NATIVE_TOKENS.update(deps.storage, |_| -> StdResult<_> {
+                            Ok(total_native.checked_add(Uint128::new(1))?)
+                        })?;
                     }
-                    Ok((ptoken_id.clone(), balance.amount));
+                    Ok((ptoken_id.clone(), balance.amount))
                 }
-                _ => Err(ContractError::OneTokenAtATime),
+                _ => Err(ContractError::OneTokenAtATime {}),
             }
         },
         Balance::Cw20(have) => {
             Ok((have.address.into_string(), have.amount))
         }
-        _ => Err(ContractError::WrongTokenType("The token type not supported".into_string())),
+        _ => Err(ContractError::WrongTokenType("The token type not supported".into())),
     }?;
 
     Ok(Response::new().
@@ -85,10 +85,10 @@ pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<
         add_attribute("value", amount)
     )
 }
-pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequest) -> Result<Response, ContractError> {
-    let inst = unshieldInfo.inst;
+pub fn try_withdraw(deps: DepsMut, unshieldInfo: UnshieldRequest) -> Result<Response, ContractError> {
+    let inst = hex::decode(unshieldInfo.inst).unwrap_or_default();
     if inst.len() < LEN {
-        return Err(ContractError::InvalidBeaconInstruction.into());
+        return Err(ContractError::InvalidBeaconInstruction {});
     }
     let inst_ = array_ref![inst, 0, LEN];
     #[allow(clippy::ptr_offset_with_cast)]
@@ -116,21 +116,22 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequ
 
     // validate metatype and key provided
     if (meta_type != 157 && meta_type != 158) || shard_id != 1 {
-        return Err(ContractError::InvalidKeysInInstruction.into());
+        return Err(ContractError::InvalidKeysInInstruction {});
     }
 
     // verify beacon signature
-    if unshieldInfo.indexes.len() != unshieldInfo.signatures.len() {
-        return Err(ContractError::InvalidKeysAndIndexes.into());
+    if unshieldInfo.indexes.len() != unshieldInfo.signatures.len() ||
+        unshieldInfo.signatures.len() != unshieldInfo.vs.len(){
+        return Err(ContractError::InvalidKeysAndIndexes {});
     }
 
-    let beacons = get_beacons(&deps, Uint128::new(u128(unshieldInfo.height)));
+    let beacons = get_beacons(&deps, unshieldInfo.height)?;
     if beacons.len() == 0 {
-        return Err(ContractError::InvalidBeaconList.into());
+        return Err(ContractError::InvalidBeaconList {});
     }
 
     if unshieldInfo.signatures.len() <= beacons.len() * 2 / 3 {
-        return Err(ContractError::InvalidNumberOfSignature.into());
+        return Err(ContractError::InvalidNumberOfSignature {});
     }
 
     let api = deps.api;
@@ -140,20 +141,16 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequ
     let blk = hash_keccak(&hash_keccak(&blk_data_bytes[..]).0).0;
 
     for i in 0..unshieldInfo.indexes.len() {
-        let s_r_v = unshieldInfo.signatures[i];
-        let (s_r, v) = s_r_v.split_at(64);
-        if v.len() != 1 {
-            return Err(ContractError::InvalidBeaconSignature.into());
-        }
+        let (s_r, v) = (hex::decode(unshieldInfo.signatures[i].clone()).unwrap_or_default(), unshieldInfo.vs[i]);
         let beacon_key_from_signature_result = api.secp256k1_recover_pubkey(
             &blk,
-            s_r,
-            v[0],
+            &s_r[..],
+            v,
         ).unwrap();
         let index_beacon = unshieldInfo.indexes[i];
-        let beacon_key = beacons[index_beacon as usize];
-        if beacon_key_from_signature_result != beacon_key {
-            return Err(ContractError::InvalidBeaconSignature.into());
+        let beacon_key = beacons[index_beacon as usize].clone();
+        if hex::encode(beacon_key_from_signature_result) != beacon_key {
+            return Err(ContractError::InvalidBeaconSignature {});
         }
     }
 
@@ -168,35 +165,36 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequ
         &unshieldInfo.inst_paths,
         &unshieldInfo.inst_path_is_lefts
     ) {
-        return Err(ContractError::InvalidBeaconMerkleTree.into());
+        return Err(ContractError::InvalidBeaconMerkleTree {});
     }
 
     // store tx burn
-    BURNTX.update(deps.storage, tx_id, |tx| match tx {
+    let tx_id_str = hex::encode(tx_id);
+    BURNTX.update(deps.storage, &tx_id_str, |tx| match tx {
         Some(_) => Err(ContractError::AlreadyUsed {}),
-        None => Ok(true),
+        None => Ok(1),
     })?;
 
-    let token_str = hex::encode(token);
-    let recipient_str = Addr::from_vec(receiver_key.into_vec())?;
-    let token_id: String = NATIVE_TOKENS.may_load(deps.storage, token_str)?.unwrap_or_default();
+    let token_addr = Addr::from_vec(token.to_vec())?.into_string();
+    let recipient_str = Addr::from_vec(receiver_key.to_vec())?.into_string();
+    let token_id: String = NATIVE_TOKENS.may_load(deps.storage, &token_addr)?.unwrap_or_default();
 
-    let amount_str: String = coin_to_string(unshield_amount, &token_str);
+    let amount_str: String = coin_to_string(unshield_amount, &token_addr);
     let message ;
     // transfer tokens
     if token_id != "" {
-        let amount = coins(unshield_amount.u128(), denom);
+        let amount = coins(unshield_amount.u128(), token_addr.clone());
         message = SubMsg::new(BankMsg::Send {
-            to_address: recipient_str.into_string(),
+            to_address: recipient_str,
             amount,
         });
     } else {
         let transfer = Cw20ExecuteMsg::Transfer {
-            recipient: recipient_str.into_string(),
+            recipient: recipient_str,
             amount: unshield_amount,
         };
         message = SubMsg::new(WasmMsg::Execute {
-            contract_addr: addr.into(),
+            contract_addr: token_addr.clone(),
             msg: to_binary( &transfer)?,
             funds: vec! [],
         })
@@ -204,9 +202,9 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequ
 
     Ok(Response::new()
         .add_submessage(message)
-        .add_attribute("action", "claim")
+        .add_attribute("action", "withdraw")
         .add_attribute("tokens", amount_str)
-        .add_attribute("sender", info.sender))
+        .add_attribute("receiver", recipient_str.clone()))
 }
 
 pub fn execute_receive(
@@ -232,18 +230,6 @@ pub fn execute_receive(
     }
 }
 
-#[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
-    match msg {
-        QueryMsg::GetCount {} => to_binary(&query_count(deps)?),
-    }
-}
-
-fn query_count(deps: Deps) -> StdResult<CountResponse> {
-    let state = STATE.load(deps.storage)?;
-    Ok(CountResponse { count: state.count })
-}
-
 #[inline]
 fn coin_to_string(amount: Uint128, denom: &str) -> String {
     format!("{} {}", amount, denom)
@@ -260,7 +246,6 @@ fn instruction_in_merkle_tree(
     path_lefts: &Vec<bool>
 ) -> bool {
     if paths.len() != path_lefts.len() {
-        msg!("paths and path_lefts is not match");
         return false;
     }
     let mut build_root = leaf.clone();
@@ -281,7 +266,7 @@ fn instruction_in_merkle_tree(
     build_root == *root
 }
 
-fn append_at_top(input: u64) -> Vec<u8>  {
+fn append_at_top(input: Uint128) -> Vec<u8>  {
     let mut  input_vec = input.to_be_bytes().to_vec();
     for _ in 0..24 {
         input_vec.insert(0, 0);
@@ -296,8 +281,11 @@ fn hash_keccak(temp: &[u8]) -> Hash {
     Hash(<[u8; HASH_BYTES]>::try_from(hasher.finalize().as_slice()).unwrap())
 }
 
-fn get_beacons(deps: &DepsMut, height: Uint128) -> Vec<[u8; 64]> {
+fn get_beacons(deps: &DepsMut, height: Uint128) -> Result<Vec<String>, ContractError> {
     let beacon_heights = BEACON_HEIGHTS.may_load(deps.storage)?.unwrap_or_default();
+    if beacon_heights.len() == 0 {
+        return Err(ContractError::InvalidBeaconHeights {});
+    }
     let mut l = 0;
     let mut r = beacon_heights.len();
     loop {
@@ -311,76 +299,104 @@ fn get_beacons(deps: &DepsMut, height: Uint128) -> Vec<[u8; 64]> {
             break;
         }
     }
-    BEACONS.may_load(deps.storage, Uint128::from(r))?.unwrap_or_default()
+    Ok(BEACONS.may_load(deps.storage, Uint128::from(r as u128))?.unwrap_or_default())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{coins, from_binary};
+    use cosmwasm_std::{
+        coin, from_slice, CosmosMsg, OverflowError, OverflowOperation, StdError, Storage,
+    };
+    use cw20::Denom;
+    use cw4::{member_key, TOTAL_KEY};
+    use cw_controllers::{AdminError, Claim, HookError};
+    use cw_utils::Duration;
 
-    #[test]
-    fn proper_initialization() {
-        let mut deps = mock_dependencies(&[]);
+    use crate::error::ContractError;
 
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(1000, "earth"));
+    use super::*;
 
-        // we can just call .unwrap() to assert this was a success
-        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(0, res.messages.len());
+    const INIT_ADMIN: &str = "juan";
+    const USER1: &str = "somebody";
+    const USER2: &str = "else";
+    const USER3: &str = "funny";
+    const DENOM: &str = "stake";
+    const TOKENS_PER_WEIGHT: Uint128 = Uint128::new(1_000);
+    const MIN_BOND: Uint128 = Uint128::new(5_000);
+    const UNBONDING_BLOCKS: u64 = 100;
+    const CW20_ADDRESS: &str = "wasm1234567890";
 
-        // it worked, let's query the state
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: CountResponse = from_binary(&res).unwrap();
-        assert_eq!(17, value.count);
-    }
+    // fn default_instantiate(deps: DepsMut) {
+    //     do_instantiate(
+    //         deps,
+    //         TOKENS_PER_WEIGHT,
+    //         MIN_BOND,
+    //         Duration::Height(UNBONDING_BLOCKS),
+    //     )
+    // }
+    //
+    // #[test]
+    // fn proper_initialization() {
+    //     let mut deps = mock_dependencies();
+    //
+    //     let msg = InstantiateMsg { count: 17 };
+    //     let info = mock_info("creator", &coins(1000, "earth"));
+    //
+    //     // we can just call .unwrap() to assert this was a success
+    //     let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+    //     assert_eq!(0, res.messages.len());
+    //
+    //     // it worked, let's query the state
+    //     let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
+    //     let value: CountResponse = from_binary(&res).unwrap();
+    //     assert_eq!(17, value.count);
+    // }
 
     #[test]
     fn increment() {
-        let mut deps = mock_dependencies(&coins(2, "token"));
-
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(2, "token"));
-        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // beneficiary can release it
-        let info = mock_info("anyone", &coins(2, "token"));
-        let msg = ExecuteMsg::Increment {};
-        let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // should increase counter by 1
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: CountResponse = from_binary(&res).unwrap();
-        assert_eq!(18, value.count);
+        // let mut deps = mock_dependencies(&coins(2, "token"));
+        //
+        // let msg = InstantiateMsg { count: 17 };
+        // let info = mock_info("creator", &coins(2, "token"));
+        // let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+        //
+        // // beneficiary can release it
+        // let info = mock_info("anyone", &coins(2, "token"));
+        // let msg = ExecuteMsg::Increment {};
+        // let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
+        //
+        // // should increase counter by 1
+        // let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
+        // let value: CountResponse = from_binary(&res).unwrap();
+        // assert_eq!(18, value.count);
     }
 
     #[test]
     fn reset() {
-        let mut deps = mock_dependencies(&coins(2, "token"));
-
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(2, "token"));
-        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // beneficiary can release it
-        let unauth_info = mock_info("anyone", &coins(2, "token"));
-        let msg = ExecuteMsg::Reset { count: 5 };
-        let res = execute(deps.as_mut(), mock_env(), unauth_info, msg);
-        match res {
-            Err(ContractError::Unauthorized {}) => {}
-            _ => panic!("Must return unauthorized error"),
-        }
-
-        // only the original creator can reset the counter
-        let auth_info = mock_info("creator", &coins(2, "token"));
-        let msg = ExecuteMsg::Reset { count: 5 };
-        let _res = execute(deps.as_mut(), mock_env(), auth_info, msg).unwrap();
-
-        // should now be 5
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: CountResponse = from_binary(&res).unwrap();
-        assert_eq!(5, value.count);
+        // let mut deps = mock_dependencies(&coins(2, "token"));
+        //
+        // let msg = InstantiateMsg { count: 17 };
+        // let info = mock_info("creator", &coins(2, "token"));
+        // let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+        //
+        // // beneficiary can release it
+        // let unauth_info = mock_info("anyone", &coins(2, "token"));
+        // let msg = ExecuteMsg::Reset { count: 5 };
+        // let res = execute(deps.as_mut(), mock_env(), unauth_info, msg);
+        // match res {
+        //     Err(ContractError::Unauthorized {}) => {}
+        //     _ => panic!("Must return unauthorized error"),
+        // }
+        //
+        // // only the original creator can reset the counter
+        // let auth_info = mock_info("creator", &coins(2, "token"));
+        // let msg = ExecuteMsg::Reset { count: 5 };
+        // let _res = execute(deps.as_mut(), mock_env(), auth_info, msg).unwrap();
+        //
+        // // should now be 5
+        // let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
+        // let value: CountResponse = from_binary(&res).unwrap();
+        // assert_eq!(5, value.count);
     }
 }

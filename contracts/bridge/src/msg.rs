@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct InstantiateMsg {
-    pub committees: Vec<[u8; 64]>,
+    pub committees: Vec<String>,
     pub height: Uint128,
 }
 
@@ -37,12 +37,12 @@ pub enum ReceiveMsg {
 }
 
 /// Reserve liquidity
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct UnshieldRequest {
     // instruction in bytes
-    pub inst: [u8; 162],
+    pub inst: String,
     // beacon height
-    pub height: u64,
+    pub height: Uint128,
     // inst paths to build merkle tree
     pub inst_paths: Vec<[u8; 32]>,
     // inst path indicator
@@ -53,6 +53,8 @@ pub struct UnshieldRequest {
     pub blk_data: [u8; 32],
     // signature index
     pub indexes: Vec<u8>,
-    // signature
-    pub signatures: Vec<[u8; 65]>
+    // signatures
+    pub signatures: Vec<String>,
+    // v value
+    pub vs: Vec<u8>
 }

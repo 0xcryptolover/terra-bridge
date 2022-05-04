@@ -41,4 +41,7 @@ pub enum ContractError {
 
     #[error("The beacon list is empty")]
     InvalidBeaconList {},
+
+    #[error("Invalid beacon heights")]
+    InvalidBeaconHeights {},
 }
