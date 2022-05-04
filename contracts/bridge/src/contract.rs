@@ -1,16 +1,17 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, from_slice};
+use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, from_slice, SubMsg, WasmMsg, coins, BankMsg, Uint256};
 use cosmwasm_std::{Addr, Uint128};
 use cw2::{set_contract_version};
 use std::borrow::Borrow;
 use std::convert::TryFrom;
+use std::ops::Add;
 use crate::error::ContractError;
 use crate::msg::{CountResponse, ExecuteMsg, InstantiateMsg, QueryMsg, ReceiveMsg, UnshieldRequest};
-use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified};
-use crate::state::{BEACONS};
+use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
+use crate::state::{BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
 use arrayref::{array_refs, array_ref};
-use schemars::schema::SingleOrVec::Vec;
+use cw_storage_plus::KeyDeserialize;
 use sha3::{Digest, Keccak256};
 
 // version info for migration info
@@ -25,13 +26,9 @@ pub fn instantiate(
     info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    let state = State {
-        committees: msg.committees,
-        heights: msg.heights,
-        owner: info.sender.clone(),
-    };
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    STATE.save(deps.storage, &state)?;
+    TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(u128(0)));
+    BEACONS.save(deps.storage, msg.heights, msg.committees.as_ref());
 
     Ok(Response::new()
        .add_attribute("method", "instantiate")
@@ -48,13 +45,13 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Deposit { incognitoAddr } => try_deposit(Balance::from(info.funds), incognitoAddr),
+        ExecuteMsg::Deposit { incognitoAddr } => try_deposit(deps, Balance::from(info.funds), incognitoAddr),
         ExecuteMsg::Withdraw { proof } => try_withdraw(deps, info, proof),
         ExecuteMsg::Receive(msg) => execute_receive(deps, env, info, msg),
     }
 }
 
-pub fn try_deposit(amount: Balance, incognito: String) -> Result<Response, ContractError> {
+pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<Response, ContractError> {
     // detect token deposit and emit event
     let (token, amount) = match &amount {
         Balance::Native(have) => {
@@ -62,7 +59,15 @@ pub fn try_deposit(amount: Balance, incognito: String) -> Result<Response, Contr
                 0 => Err(ContractError::NoFunds),
                 1 => {
                     let balance = &have.0[0];
-                    Ok((balance.denom.clone(), balance.amount));
+                    let mut ptoken_id = NATIVE_TOKENS.may_load(deps.storage, balance.clone().denom)?.unwrap_or_default();
+                    // check native token existed
+                    if ptoken_id == "" {
+                        let total_native = TOTAL_NATIVE_TOKENS.may_load(deps.storage)?.unwrap_or_default();
+                        ptoken_id = hex::encode(Uint256::from(total_native.u128()).to_be_bytes());
+                        NATIVE_TOKENS.update(deps.storage, balance.clone().denom, ptoken_id)?;
+                        TOTAL_NATIVE_TOKENS.update(deps.storage, total_native.add(1))?;
+                    }
+                    Ok((ptoken_id.clone(), balance.amount));
                 }
                 _ => Err(ContractError::OneTokenAtATime),
             }
@@ -106,7 +111,7 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequ
     ];
     let meta_type = u8::from_le_bytes(*meta_type);
     let shard_id = u8::from_le_bytes(*shard_id);
-    let unshield_amount_u64 = u64::from_be_bytes(*unshield_amount);
+    let unshield_amount = Uint128::from(u64::from_be_bytes(*unshield_amount));
 
     // validate metatype and key provided
     if (meta_type != 157 && meta_type != 158) || shard_id != 1 {
@@ -118,7 +123,7 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequ
         return Err(ContractError::InvalidKeysAndIndexes.into());
     }
 
-    let beacons = BEACONS.may_load(deps.storage, Uint128::new(u128(unshieldInfo.height)))?.unwrap();
+    let beacons = BEACONS.may_load(deps.storage, Uint128::new(u128(unshieldInfo.height)))?.unwrap_or_default();
     if unshieldInfo.signatures.len() <= beacons.len() * 2 / 3 {
         return Err(ContractError::InvalidNumberOfSignature.into());
     }
@@ -161,30 +166,36 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequ
         return Err(ContractError::InvalidBeaconMerkleTree.into());
     }
 
-    let (amount_str, message) = match &config.denom {
-        Denom::Native(denom) => {
-            let amount_str = coin_to_string(release, denom.as_str());
-            let amount = coins(release.u128(), denom);
-            let message = SubMsg::new(BankMsg::Send {
-                to_address: info.sender.to_string(),
-                amount,
-            });
-            (amount_str, message)
-        }
-        Denom::Cw20(addr) => {
-            let amount_str = coin_to_string(release, addr.as_str());
-            let transfer = Cw20ExecuteMsg::Transfer {
-                recipient: info.sender.clone().into(),
-                amount: release,
-            };
-            let message = SubMsg::new(WasmMsg::Execute {
-                contract_addr: addr.into(),
-                msg: to_binary(&transfer)?,
-                funds: vec![],
-            });
-            (amount_str, message)
-        }
-    };
+    // store tx burn
+    BURNTX.update(deps.storage, tx_id, |tx| match tx {
+        Some(_) => Err(ContractError::AlreadyUsed {}),
+        None => Ok(true),
+    })?;
+
+    let token_str = hex::encode(token);
+    let recipient_str = Addr::from_vec(receiver_key.into_vec())?;
+    let token_id: String = NATIVE_TOKENS.may_load(deps.storage, token_str)?.unwrap_or_default();
+
+    let amount_str: String = coin_to_string(unshield_amount, &token_str);
+    let message ;
+    // transfer tokens
+    if token_id != "" {
+        let amount = coins(unshield_amount.u128(), denom);
+        message = SubMsg::new(BankMsg::Send {
+            to_address: recipient_str.into_string(),
+            amount,
+        });
+    } else {
+        let transfer = Cw20ExecuteMsg::Transfer {
+            recipient: recipient_str.into_string(),
+            amount: unshield_amount,
+        };
+        message = SubMsg::new(WasmMsg::Execute {
+            contract_addr: addr.into(),
+            msg: to_binary( &transfer)?,
+            funds: vec! [],
+        })
+    }
 
     Ok(Response::new()
         .add_submessage(message)
@@ -208,11 +219,10 @@ pub fn execute_receive(
         address: info.sender,
         amount: wrapper.amount,
     });
-    let api = deps.api;
 
     match msg {
-        ReceiveMsg::Bond {} => {
-            try_deposit(deps, env, balance, api.addr_validate(&wrapper.sender)?)
+        ReceiveMsg::Deposit {} => {
+            try_deposit( deps,balance, wrapper.msg.to_string())
         }
     }
 }
@@ -227,6 +237,11 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 fn query_count(deps: Deps) -> StdResult<CountResponse> {
     let state = STATE.load(deps.storage)?;
     Ok(CountResponse { count: state.count })
+}
+
+#[inline]
+fn coin_to_string(amount: Uint128, denom: &str) -> String {
+    format!("{} {}", amount, denom)
 }
 
 pub const HASH_BYTES: usize = 32;

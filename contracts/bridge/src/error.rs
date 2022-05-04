@@ -35,4 +35,7 @@ pub enum ContractError {
 
     #[error("Invalid beacon merkle tree")]
     InvalidBeaconMerkleTree {},
+
+    #[error("Tx burn already used")]
+    AlreadyUsed {},
 }
