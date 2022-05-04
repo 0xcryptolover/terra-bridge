@@ -4,12 +4,12 @@ use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response,
 use cosmwasm_std::{Addr, Uint128};
 use cw2::{set_contract_version};
 use std::borrow::Borrow;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::ops::Add;
 use crate::error::ContractError;
 use crate::msg::{CountResponse, ExecuteMsg, InstantiateMsg, QueryMsg, ReceiveMsg, UnshieldRequest};
 use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
-use crate::state::{BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
+use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
 use arrayref::{array_refs, array_ref};
 use cw_storage_plus::KeyDeserialize;
 use sha3::{Digest, Keccak256};
@@ -28,13 +28,14 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(u128(0)));
-    BEACONS.save(deps.storage, msg.heights, msg.committees.as_ref());
+    BEACONS.save(deps.storage, msg.height, msg.committees.as_ref());
+    BEACON_HEIGHTS.save(deps.storage, &vec![msg.height]);
 
     Ok(Response::new()
        .add_attribute("method", "instantiate")
        .add_attribute("owner", info.sender)
        .add_attribute("committees", msg.committees.clone())
-       .add_attribute("heights", msg.heights.clone()))
+       .add_attribute("heights", msg.height.clone()))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -123,7 +124,11 @@ pub fn try_withdraw(deps: DepsMut, info: MessageInfo, unshieldInfo: UnshieldRequ
         return Err(ContractError::InvalidKeysAndIndexes.into());
     }
 
-    let beacons = BEACONS.may_load(deps.storage, Uint128::new(u128(unshieldInfo.height)))?.unwrap_or_default();
+    let beacons = get_beacons(&deps, Uint128::new(u128(unshieldInfo.height)));
+    if beacons.len() == 0 {
+        return Err(ContractError::InvalidBeaconList.into());
+    }
+
     if unshieldInfo.signatures.len() <= beacons.len() * 2 / 3 {
         return Err(ContractError::InvalidNumberOfSignature.into());
     }
@@ -213,7 +218,7 @@ pub fn execute_receive(
     // info.sender is the address of the cw20 contract (that re-sent this message).
     // wrapper.sender is the address of the user that requested the cw20 contract to send this.
     // This cannot be fully trusted (the cw20 contract can fake it), so only use it for actions
-    // in the address's favor (like paying/bonding tokens, not withdrawls)
+    // in the address's favor (like paying/bonding tokens, not withdrawals)
     let msg: ReceiveMsg = from_slice(&wrapper.msg)?;
     let balance = Balance::Cw20(Cw20CoinVerified {
         address: info.sender,
@@ -289,6 +294,24 @@ fn hash_keccak(temp: &[u8]) -> Hash {
     let mut hasher = Keccak256::default();
     hasher.update(temp);
     Hash(<[u8; HASH_BYTES]>::try_from(hasher.finalize().as_slice()).unwrap())
+}
+
+fn get_beacons(deps: &DepsMut, height: Uint128) -> Vec<[u8; 64]> {
+    let beacon_heights = BEACON_HEIGHTS.may_load(deps.storage)?.unwrap_or_default();
+    let mut l = 0;
+    let mut r = beacon_heights.len();
+    loop {
+        let m = (r + l) / 2;
+        if height >= beacon_heights[m] {
+            l = m;
+        } else {
+            r = m - 1;
+        }
+        if l == r {
+            break;
+        }
+    }
+    BEACONS.may_load(deps.storage, Uint128::from(r))?.unwrap_or_default()
 }
 
 #[cfg(test)]

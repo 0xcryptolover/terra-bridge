@@ -38,4 +38,7 @@ pub enum ContractError {
 
     #[error("Tx burn already used")]
     AlreadyUsed {},
+
+    #[error("The beacon list is empty")]
+    InvalidBeaconList {},
 }
