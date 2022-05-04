@@ -13,7 +13,7 @@ pub struct InstantiateMsg {
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
     Deposit {
-        incognitoAddr: String,
+        incognito_addr: String,
     },
     Withdraw {
         proof: UnshieldRequest

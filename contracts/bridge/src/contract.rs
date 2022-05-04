@@ -25,9 +25,9 @@ pub fn instantiate(
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(0));
-    BEACONS.save(deps.storage, msg.height, &msg.committees);
-    BEACON_HEIGHTS.save(deps.storage, &vec![msg.height]);
+    TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(0))?;
+    BEACONS.save(deps.storage, &msg.height.to_be_bytes()[..], &msg.committees)?;
+    BEACON_HEIGHTS.save(deps.storage, &vec![msg.height])?;
     Ok(Response::new()
        .add_attribute("method", "instantiate")
        .add_attribute("owner", info.sender)
@@ -42,7 +42,7 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Deposit { incognitoAddr } => try_deposit(deps, Balance::from(info.funds), incognitoAddr),
+        ExecuteMsg::Deposit { incognito_addr } => try_deposit(deps, Balance::from(info.funds), incognito_addr),
         ExecuteMsg::Withdraw { proof } => try_withdraw(deps, proof),
         ExecuteMsg::Receive(msg) => execute_receive(deps, _env, info, msg),
     }
@@ -62,7 +62,7 @@ pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<
                         let total_native = TOTAL_NATIVE_TOKENS.may_load(deps.storage)?.unwrap_or_default();
                         ptoken_id = hex::encode(Uint256::from(total_native.u128()).to_be_bytes());
                         NATIVE_TOKENS.update(deps.storage, &balance.clone().denom, |_| -> StdResult<_> {
-                            Ok(ptoken_id)
+                            Ok(ptoken_id.clone())
                         })?;
                         TOTAL_NATIVE_TOKENS.update(deps.storage, |_| -> StdResult<_> {
                             Ok(total_native.checked_add(Uint128::new(1))?)
@@ -74,9 +74,8 @@ pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<
             }
         },
         Balance::Cw20(have) => {
-            Ok((have.address.into_string(), have.amount))
+            Ok((have.address.clone().into_string(), have.amount))
         }
-        _ => Err(ContractError::WrongTokenType("The token type not supported".into())),
     }?;
 
     Ok(Response::new().
@@ -85,8 +84,8 @@ pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<
         add_attribute("value", amount)
     )
 }
-pub fn try_withdraw(deps: DepsMut, unshieldInfo: UnshieldRequest) -> Result<Response, ContractError> {
-    let inst = hex::decode(unshieldInfo.inst).unwrap_or_default();
+pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Response, ContractError> {
+    let inst = hex::decode(unshield_info.inst).unwrap_or_default();
     if inst.len() < LEN {
         return Err(ContractError::InvalidBeaconInstruction {});
     }
@@ -120,34 +119,34 @@ pub fn try_withdraw(deps: DepsMut, unshieldInfo: UnshieldRequest) -> Result<Resp
     }
 
     // verify beacon signature
-    if unshieldInfo.indexes.len() != unshieldInfo.signatures.len() ||
-        unshieldInfo.signatures.len() != unshieldInfo.vs.len(){
+    if unshield_info.indexes.len() != unshield_info.signatures.len() ||
+        unshield_info.signatures.len() != unshield_info.vs.len(){
         return Err(ContractError::InvalidKeysAndIndexes {});
     }
 
-    let beacons = get_beacons(&deps, unshieldInfo.height)?;
+    let beacons = get_beacons(&deps, unshield_info.height)?;
     if beacons.len() == 0 {
         return Err(ContractError::InvalidBeaconList {});
     }
 
-    if unshieldInfo.signatures.len() <= beacons.len() * 2 / 3 {
+    if unshield_info.signatures.len() <= beacons.len() * 2 / 3 {
         return Err(ContractError::InvalidNumberOfSignature {});
     }
 
     let api = deps.api;
-    let mut blk_data_bytes = unshieldInfo.blk_data.to_vec();
-    blk_data_bytes.extend_from_slice(&unshieldInfo.inst_root);
+    let mut blk_data_bytes = unshield_info.blk_data.to_vec();
+    blk_data_bytes.extend_from_slice(&unshield_info.inst_root);
     // Get double block hash from instRoot and other data
     let blk = hash_keccak(&hash_keccak(&blk_data_bytes[..]).0).0;
 
-    for i in 0..unshieldInfo.indexes.len() {
-        let (s_r, v) = (hex::decode(unshieldInfo.signatures[i].clone()).unwrap_or_default(), unshieldInfo.vs[i]);
+    for i in 0..unshield_info.indexes.len() {
+        let (s_r, v) = (hex::decode(unshield_info.signatures[i].clone()).unwrap_or_default(), unshield_info.vs[i]);
         let beacon_key_from_signature_result = api.secp256k1_recover_pubkey(
             &blk,
             &s_r[..],
             v,
         ).unwrap();
-        let index_beacon = unshieldInfo.indexes[i];
+        let index_beacon = unshield_info.indexes[i];
         let beacon_key = beacons[index_beacon as usize].clone();
         if hex::encode(beacon_key_from_signature_result) != beacon_key {
             return Err(ContractError::InvalidBeaconSignature {});
@@ -155,15 +154,15 @@ pub fn try_withdraw(deps: DepsMut, unshieldInfo: UnshieldRequest) -> Result<Resp
     }
 
     // append block height to instruction
-    let height_vec = append_at_top(unshieldInfo.height);
+    let height_vec = append_at_top(unshield_info.height);
     let mut inst_vec = inst.to_vec();
     inst_vec.extend_from_slice(&height_vec);
     let inst_hash = hash_keccak(&inst_vec[..]).0;
     if !instruction_in_merkle_tree(
         &inst_hash,
-        &unshieldInfo.inst_root,
-        &unshieldInfo.inst_paths,
-        &unshieldInfo.inst_path_is_lefts
+        &unshield_info.inst_root,
+        &unshield_info.inst_paths,
+        &unshield_info.inst_path_is_lefts
     ) {
         return Err(ContractError::InvalidBeaconMerkleTree {});
     }
@@ -185,12 +184,12 @@ pub fn try_withdraw(deps: DepsMut, unshieldInfo: UnshieldRequest) -> Result<Resp
     if token_id != "" {
         let amount = coins(unshield_amount.u128(), token_addr.clone());
         message = SubMsg::new(BankMsg::Send {
-            to_address: recipient_str,
+            to_address: recipient_str.clone(),
             amount,
         });
     } else {
         let transfer = Cw20ExecuteMsg::Transfer {
-            recipient: recipient_str,
+            recipient: recipient_str.clone(),
             amount: unshield_amount,
         };
         message = SubMsg::new(WasmMsg::Execute {
@@ -299,7 +298,7 @@ fn get_beacons(deps: &DepsMut, height: Uint128) -> Result<Vec<String>, ContractE
             break;
         }
     }
-    Ok(BEACONS.may_load(deps.storage, Uint128::from(r as u128))?.unwrap_or_default())
+    Ok(BEACONS.may_load(deps.storage, &r.to_be_bytes()[..])?.unwrap_or_default())
 }
 
 #[cfg(test)]
