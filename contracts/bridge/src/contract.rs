@@ -341,46 +341,40 @@ mod tests {
     use crate::error::ContractError;
     use super::*;
 
-    const INIT_ADMIN: &str = "juan";
-    const USER1: &str = "somebody";
-    const USER2: &str = "else";
-    const USER3: &str = "funny";
-    const DENOM: &str = "stake";
-    const TOKENS_PER_WEIGHT: Uint128 = Uint128::new(1_000);
-    const MIN_BOND: Uint128 = Uint128::new(5_000);
+    const BEACON_1: [&str; 2] = ["beacon1", "beacon2"];
+    const HEIGHT_1: Uint128 = Uint128::new(0);
     const UNBONDING_BLOCKS: u64 = 100;
     const CW20_ADDRESS: &str = "wasm1234567890";
 
     fn default_instantiate(deps: DepsMut) {
+        let mut beacons: Vec<String> = vec![];
+        for i in 0..BEACON_1.len() {
+            beacons.push(BEACON_1[i].to_string());
+        }
         let msg = InstantiateMsg {
-            committees: vec!["beacon1".to_string(), "beacon2".to_string()],
-            height: Uint128::new(0)
+            committees: beacons,
+            height: HEIGHT_1,
         };
         let info = mock_info("creator", &[]);
         instantiate(deps, mock_env(), info, msg).unwrap();
     }
 
+    #[test]
+    fn proper_initialization() {
+        let mut deps = mock_dependencies();
+        default_instantiate(deps.as_mut());
 
-    //
-    // #[test]
-    // fn proper_initialization() {
-    //     let mut deps = mock_dependencies();
-    //
-    //     let msg = InstantiateMsg { count: 17 };
-    //     let info = mock_info("creator", &coins(1000, "earth"));
-    //
-    //     // we can just call .unwrap() to assert this was a success
-    //     let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-    //     assert_eq!(0, res.messages.len());
-    //
-    //     // it worked, let's query the state
-    //     let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-    //     let value: CountResponse = from_binary(&res).unwrap();
-    //     assert_eq!(17, value.count);
-    // }
+        // it worked, let's query the state
+        let res = query_beacon(deps.as_ref(), HEIGHT_1).unwrap();
+        let mut beacons: Vec<String> = vec![];
+        for i in 0..BEACON_1.len() {
+            beacons.push(BEACON_1[i].to_string());
+        }
+        assert_eq!(res.beacons, beacons);
+    }
 
     #[test]
-    fn increment() {
+    fn deposit() {
         // let mut deps = mock_dependencies(&coins(2, "token"));
         //
         // let msg = InstantiateMsg { count: 17 };
@@ -399,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn reset() {
+    fn withdraw() {
         // let mut deps = mock_dependencies(&coins(2, "token"));
         //
         // let msg = InstantiateMsg { count: 17 };
