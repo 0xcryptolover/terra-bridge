@@ -75,3 +75,13 @@ pub struct BeaconResponse {
 pub struct TxBurnResponse {
     pub is_used: u8,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct TotalNativeResponse {
+    pub result: Uint128,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct PtokenResponse {
+    pub result: u8,
+}

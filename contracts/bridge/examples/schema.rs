@@ -25,4 +25,5 @@ fn main() {
     export_schema(&schema_for!(ReceiveMsg), &out_dir);
     export_schema(&schema_for!(UnshieldRequest), &out_dir);
     export_schema(&schema_for!(TxBurnResponse), &out_dir);
+    export_schema(&schema_for!(BeaconResponse), &out_dir);
 }

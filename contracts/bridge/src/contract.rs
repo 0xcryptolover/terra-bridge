@@ -5,7 +5,7 @@ use cosmwasm_std::{Addr, Uint128};
 use cw2::{set_contract_version};
 use std::convert::{TryFrom};
 use crate::error::ContractError;
-use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, QueryMsg, ReceiveMsg, TxBurnResponse, UnshieldRequest};
+use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, PtokenResponse, QueryMsg, ReceiveMsg, TotalNativeResponse, TxBurnResponse, UnshieldRequest};
 use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
 use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
 use arrayref::{array_refs, array_ref};
@@ -56,19 +56,18 @@ pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<
                 0 => Err(ContractError::NoFunds {}),
                 1 => {
                     let balance = &have.0[0];
-                    let mut ptoken_id = NATIVE_TOKENS.may_load(deps.storage, &balance.clone().denom)?.unwrap_or_default();
+                    let is_exist = NATIVE_TOKENS.may_load(deps.storage, &balance.clone().denom)?.unwrap_or_default();
                     // check native token existed
-                    if ptoken_id == "" {
+                    if is_exist == 0 {
                         let total_native = TOTAL_NATIVE_TOKENS.may_load(deps.storage)?.unwrap_or_default();
-                        ptoken_id = hex::encode(Uint256::from(total_native.u128()).to_be_bytes());
                         NATIVE_TOKENS.update(deps.storage, &balance.clone().denom, |_| -> StdResult<_> {
-                            Ok(ptoken_id.clone())
+                            Ok(1)
                         })?;
                         TOTAL_NATIVE_TOKENS.update(deps.storage, |_| -> StdResult<_> {
                             Ok(total_native.checked_add(Uint128::new(1))?)
                         })?;
                     }
-                    Ok((ptoken_id.clone(), balance.amount))
+                    Ok((balance.clone().denom, balance.amount))
                 }
                 _ => Err(ContractError::OneTokenAtATime {}),
             }
@@ -98,7 +97,7 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
         receiver_key,
         _,
         unshield_amount,
-        tx_id, // todo: store this data
+        tx_id,
     ) = array_refs![
         inst_,
         1,
@@ -176,12 +175,11 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
 
     let token_addr = Addr::from_vec(token.to_vec())?.into_string();
     let recipient_str = Addr::from_vec(receiver_key.to_vec())?.into_string();
-    let token_id: String = NATIVE_TOKENS.may_load(deps.storage, &token_addr)?.unwrap_or_default();
-
+    let is_native: u8 = NATIVE_TOKENS.may_load(deps.storage, &token_addr)?.unwrap_or_default();
     let amount_str: String = coin_to_string(unshield_amount, &token_addr);
     let message ;
     // transfer tokens
-    if token_id != "" {
+    if is_native == 1 {
         let amount = coins(unshield_amount.u128(), token_addr.clone());
         message = SubMsg::new(BankMsg::Send {
             to_address: recipient_str.clone(),
@@ -330,20 +328,31 @@ pub fn query_tx_burn(deps: Deps, txburn: &str) -> StdResult<TxBurnResponse> {
     Ok(TxBurnResponse { is_used: res })
 }
 
+// get total native tokens
+pub fn query_total_native(deps: Deps) -> StdResult<TotalNativeResponse> {
+    let res = TOTAL_NATIVE_TOKENS.may_load(deps.storage)?.unwrap_or_default();
+    Ok(TotalNativeResponse { result: res })
+}
+
+// get private external token for native tokens
+pub fn query_native_ptoken(deps: Deps, native_token: &str) -> StdResult<PtokenResponse> {
+    let res = NATIVE_TOKENS.may_load(deps.storage, native_token)?.unwrap_or_default();
+    Ok(PtokenResponse { result: res })
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{
-        coin, from_slice, CosmosMsg, OverflowError, OverflowOperation, StdError, Storage,
-    };
-    use cw20::Denom;
-    use crate::error::ContractError;
     use super::*;
 
     const BEACON_1: [&str; 2] = ["beacon1", "beacon2"];
     const HEIGHT_1: Uint128 = Uint128::new(0);
-    const UNBONDING_BLOCKS: u64 = 100;
+    const INCOGNITO_ADDRESS: &str = "Address1";
+    const USER1: &str = "user1";
+    const USER2: &str = "user2";
+    const DENOM: &str = "shield";
+    const DENOM1: &str = "shield2";
+    const SHIELD_AMOUNT: u128 = 1_000_000_000;
     const CW20_ADDRESS: &str = "wasm1234567890";
 
     fn default_instantiate(deps: DepsMut) {
@@ -357,6 +366,27 @@ mod tests {
         };
         let info = mock_info("creator", &[]);
         instantiate(deps, mock_env(), info, msg).unwrap();
+    }
+
+    fn deposit_native(mut deps: DepsMut, amount: u128, denom: String) {
+        let mut env = mock_env();
+        let msg = ExecuteMsg::Deposit {
+            incognito_addr: INCOGNITO_ADDRESS.to_string()
+        };
+        let info = mock_info(USER1, &coins(amount, denom));
+        execute(deps.branch(), env.clone(), info, msg).unwrap();
+    }
+
+    fn deposit_cw20(mut deps: DepsMut, amount: u128) {
+        let mut env = mock_env();
+
+        let msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
+            sender: USER1.to_string(),
+            amount: Uint128::new(amount),
+            msg: to_binary(&ReceiveMsg::Deposit {}).unwrap(),
+        });
+        let info = mock_info(CW20_ADDRESS, &[]);
+        execute(deps.branch(), env.clone(), info, msg).unwrap();
     }
 
     #[test]
@@ -375,48 +405,45 @@ mod tests {
 
     #[test]
     fn deposit() {
-        // let mut deps = mock_dependencies(&coins(2, "token"));
-        //
-        // let msg = InstantiateMsg { count: 17 };
-        // let info = mock_info("creator", &coins(2, "token"));
-        // let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        //
-        // // beneficiary can release it
-        // let info = mock_info("anyone", &coins(2, "token"));
-        // let msg = ExecuteMsg::Increment {};
-        // let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
-        //
-        // // should increase counter by 1
-        // let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        // let value: CountResponse = from_binary(&res).unwrap();
-        // assert_eq!(18, value.count);
+        let mut deps = mock_dependencies();
+        default_instantiate(deps.as_mut());
+        let mut beacons: Vec<String> = vec![];
+        for i in 0..BEACON_1.len() {
+            beacons.push(BEACON_1[i].to_string());
+        }
+        let res = query_beacon(deps.as_ref(), HEIGHT_1).unwrap();
+        assert_eq!(res.beacons, beacons);
+
+        let mut total_native_token = query_total_native(deps.as_ref()).unwrap();
+        assert_eq!(0, total_native_token.result.u128());
+
+        let mut ptoken = query_native_ptoken(deps.as_ref(), DENOM).unwrap();
+        assert_eq!(ptoken.result, 0);
+
+        // test deposit native tokens
+        deposit_native(deps.as_mut(), SHIELD_AMOUNT, DENOM.to_string());
+        total_native_token = query_total_native(deps.as_ref()).unwrap();
+        assert_eq!(1, total_native_token.result.u128());
+        ptoken = query_native_ptoken(deps.as_ref(), DENOM).unwrap();
+        assert_eq!(ptoken.result, 1);
+
+        ptoken = query_native_ptoken(deps.as_ref(), DENOM1).unwrap();
+        assert_eq!(ptoken.result, 0);
+
+        deposit_native(deps.as_mut(), SHIELD_AMOUNT, DENOM1.to_string());
+        total_native_token = query_total_native(deps.as_ref()).unwrap();
+        assert_eq!(2, total_native_token.result.u128());
+        ptoken = query_native_ptoken(deps.as_ref(), DENOM1).unwrap();
+        assert_eq!(ptoken.result, 1);
+
+        // test deposit tokens
+        deposit_cw20(deps.as_mut(), SHIELD_AMOUNT);
+        total_native_token = query_total_native(deps.as_ref()).unwrap();
+        assert_eq!(2, total_native_token.result.u128());
     }
 
     #[test]
     fn withdraw() {
-        // let mut deps = mock_dependencies(&coins(2, "token"));
-        //
-        // let msg = InstantiateMsg { count: 17 };
-        // let info = mock_info("creator", &coins(2, "token"));
-        // let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        //
-        // // beneficiary can release it
-        // let unauth_info = mock_info("anyone", &coins(2, "token"));
-        // let msg = ExecuteMsg::Reset { count: 5 };
-        // let res = execute(deps.as_mut(), mock_env(), unauth_info, msg);
-        // match res {
-        //     Err(ContractError::Unauthorized {}) => {}
-        //     _ => panic!("Must return unauthorized error"),
-        // }
-        //
-        // // only the original creator can reset the counter
-        // let auth_info = mock_info("creator", &coins(2, "token"));
-        // let msg = ExecuteMsg::Reset { count: 5 };
-        // let _res = execute(deps.as_mut(), mock_env(), auth_info, msg).unwrap();
-        //
-        // // should now be 5
-        // let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        // let value: CountResponse = from_binary(&res).unwrap();
-        // assert_eq!(5, value.count);
+
     }
 }
