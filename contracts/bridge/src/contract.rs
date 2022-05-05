@@ -1,14 +1,13 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, DepsMut, Env, MessageInfo, Response, from_slice, SubMsg, WasmMsg, coins, BankMsg, Uint256, StdResult, Deps, Binary};
+use cosmwasm_std::{to_binary, DepsMut, Env, MessageInfo, Response, from_slice, SubMsg, WasmMsg, coins, BankMsg, StdResult, Deps, Binary};
 use cosmwasm_std::{Addr, Uint128};
 use cw2::{set_contract_version};
 use std::convert::{TryFrom};
 use crate::error::ContractError;
-use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, PtokenResponse, QueryMsg, ReceiveMsg, TotalNativeResponse, TxBurnResponse, UnshieldRequest};
+use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, PtokenResponse, QueryMsg, ReceiveMsg, TotalNativeResponse, TxBurnResponse, UnshieldRequest, MigrateMsg};
 use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
 use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
-use arrayref::{array_refs, array_ref};
 use cw_storage_plus::KeyDeserialize;
 use sha3::{Digest, Keccak256};
 
@@ -16,6 +15,11 @@ use sha3::{Digest, Keccak256};
 const CONTRACT_NAME: &str = "crates.io:bridge";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEN: usize = 1 + 1 + 32 + 32 + 32 + 32; // ignore last 32 bytes in instruction
+
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn migrate(_deps: DepsMut, _env: Env, _msg: MigrateMsg) -> StdResult<Response> {
+    Ok(Response::default())
+}
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
@@ -88,29 +92,15 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
     if inst.len() < LEN {
         return Err(ContractError::InvalidBeaconInstruction {});
     }
-    let inst_ = array_ref![inst, 0, LEN];
-    #[allow(clippy::ptr_offset_with_cast)]
-        let (
-        meta_type,
-        shard_id,
-        token,
-        receiver_key,
-        _,
-        unshield_amount,
-        tx_id,
-    ) = array_refs![
-        inst_,
-        1,
-        1,
-        32,
-        32,
-        24,
-        8,
-        32
-    ];
-    let meta_type = u8::from_le_bytes(*meta_type);
-    let shard_id = u8::from_le_bytes(*shard_id);
-    let unshield_amount = Uint128::from(u64::from_be_bytes(*unshield_amount));
+    let inst_ = inst.as_slice();
+    let meta_type = inst_[0];
+    let shard_id = inst_[1];
+    let token = &inst_[2..34];
+    let receiver_key = &inst_[34..66];
+    let mut amount_array = [0 as u8; 8];
+    amount_array.clone_from_slice(&inst_[90..98]);
+    let unshield_amount = Uint128::from(u64::from_be_bytes(amount_array));
+    let tx_id = &inst_[98..130];
 
     // validate metatype and key provided
     if (meta_type != 157 && meta_type != 158) || shard_id != 1 {
@@ -349,7 +339,6 @@ mod tests {
     const HEIGHT_1: Uint128 = Uint128::new(0);
     const INCOGNITO_ADDRESS: &str = "Address1";
     const USER1: &str = "user1";
-    const USER2: &str = "user2";
     const DENOM: &str = "shield";
     const DENOM1: &str = "shield2";
     const SHIELD_AMOUNT: u128 = 1_000_000_000;
