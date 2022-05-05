@@ -45,6 +45,7 @@ cosmwasm-storage = { version = "1.0.0-beta" }
 cw-storage-plus = "0.13.2"
 cw2 = "0.13.2"
 cw20 = "0.13.2"
+arrayref = "0.3.6"
 sha3 = "0.9"
 hex = "0.4.3"
 schemars = "0.8.3"

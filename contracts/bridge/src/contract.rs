@@ -10,6 +10,7 @@ use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
 use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
 use cw_storage_plus::KeyDeserialize;
 use sha3::{Digest, Keccak256};
+use arrayref::{array_refs, array_ref};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:bridge";
@@ -92,15 +93,29 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
     if inst.len() < LEN {
         return Err(ContractError::InvalidBeaconInstruction {});
     }
-    let inst_ = inst.as_slice();
-    let meta_type = inst_[0];
-    let shard_id = inst_[1];
-    let token = &inst_[2..34];
-    let receiver_key = &inst_[34..66];
-    let mut amount_array = [0 as u8; 8];
-    amount_array.clone_from_slice(&inst_[90..98]);
-    let unshield_amount = Uint128::from(u64::from_be_bytes(amount_array));
-    let tx_id = &inst_[98..130];
+    let inst_ = array_ref![inst, 0, LEN];
+    #[allow(clippy::ptr_offset_with_cast)]
+        let (
+        meta_type,
+        shard_id,
+        token,
+        receiver_key,
+        _,
+        unshield_amount,
+        tx_id,
+    ) = array_refs![
+         inst_,
+         1,
+         1,
+         32,
+         32,
+         24,
+         8,
+         32
+     ];
+    let meta_type = u8::from_le_bytes(*meta_type);
+    let shard_id = u8::from_le_bytes(*shard_id);
+    let unshield_amount = Uint128::from(u64::from_be_bytes(*unshield_amount));
 
     // validate metatype and key provided
     if (meta_type != 157 && meta_type != 158) || shard_id != 1 {
