@@ -3,7 +3,7 @@
     "_base": {
       "instantiation": {
         "instantiateMsg": {
-          "height": 0,
+          "height": "0",
           "committees": [
             "beacon1",
             "beacon2"

@@ -8,7 +8,6 @@ use crate::error::ContractError;
 use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, PtokenResponse, QueryMsg, ReceiveMsg, TotalNativeResponse, TxBurnResponse, UnshieldRequest, MigrateMsg};
 use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
 use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
-use cw_storage_plus::KeyDeserialize;
 use sha3::{Digest, Keccak256};
 use arrayref::{array_refs, array_ref};
 
@@ -32,11 +31,11 @@ pub fn instantiate(
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(0))?;
     BEACONS.save(deps.storage, &msg.height.to_be_bytes()[..], &msg.committees)?;
-    BEACON_HEIGHTS.save(deps.storage, &vec![msg.height])?;
+    BEACON_HEIGHTS.save(deps.storage, &vec![Uint128::new(msg.height)])?;
     Ok(Response::new()
        .add_attribute("method", "instantiate")
        .add_attribute("owner", info.sender)
-       .add_attribute("heights", msg.height))
+       .add_attribute("heights", msg.height.to_string()))
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
@@ -178,8 +177,8 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
         None => Ok(1),
     })?;
 
-    let token_addr = Addr::from_vec(token.to_vec())?.into_string();
-    let recipient_str = Addr::from_vec(receiver_key.to_vec())?.into_string();
+    let token_addr = hex::encode(token);
+    let recipient_str = hex::encode(receiver_key);
     let is_native: u8 = NATIVE_TOKENS.may_load(deps.storage, &token_addr)?.unwrap_or_default();
     let amount_str: String = coin_to_string(unshield_amount, &token_addr);
     let message ;
@@ -351,7 +350,7 @@ mod tests {
     use super::*;
 
     const BEACON_1: [&str; 2] = ["beacon1", "beacon2"];
-    const HEIGHT_1: Uint128 = Uint128::new(0);
+    const HEIGHT_1: u128 = 0;
     const INCOGNITO_ADDRESS: &str = "Address1";
     const USER1: &str = "user1";
     const DENOM: &str = "shield";
@@ -395,11 +394,11 @@ mod tests {
 
     #[test]
     fn proper_initialization() {
-        let mut deps = mock_dependencies();
+        let mut deps = mock_dependencies(&[]);
         default_instantiate(deps.as_mut());
 
         // it worked, let's query the state
-        let res = query_beacon(deps.as_ref(), HEIGHT_1).unwrap();
+        let res = query_beacon(deps.as_ref(), Uint128::new(HEIGHT_1)).unwrap();
         let mut beacons: Vec<String> = vec![];
         for i in 0..BEACON_1.len() {
             beacons.push(BEACON_1[i].to_string());
@@ -409,13 +408,13 @@ mod tests {
 
     #[test]
     fn deposit() {
-        let mut deps = mock_dependencies();
+        let mut deps = mock_dependencies(&[]);
         default_instantiate(deps.as_mut());
         let mut beacons: Vec<String> = vec![];
         for i in 0..BEACON_1.len() {
             beacons.push(BEACON_1[i].to_string());
         }
-        let res = query_beacon(deps.as_ref(), HEIGHT_1).unwrap();
+        let res = query_beacon(deps.as_ref(), Uint128::new(HEIGHT_1)).unwrap();
         assert_eq!(res.beacons, beacons);
 
         let mut total_native_token = query_total_native(deps.as_ref()).unwrap();
