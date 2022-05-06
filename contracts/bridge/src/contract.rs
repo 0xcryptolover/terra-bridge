@@ -5,7 +5,7 @@ use cosmwasm_std::{Addr, Uint128};
 use cw2::{set_contract_version};
 use std::convert::{TryFrom};
 use crate::error::ContractError;
-use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, PtokenResponse, QueryMsg, ReceiveMsg, TotalNativeResponse, TxBurnResponse, UnshieldRequest, MigrateMsg};
+use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, QueryMsg, ReceiveMsg, TxBurnResponse, UnshieldRequest, MigrateMsg};
 use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
 use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
 use sha3::{Digest, Keccak256};
@@ -15,6 +15,8 @@ use arrayref::{array_refs, array_ref};
 const CONTRACT_NAME: &str = "crates.io:bridge";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEN: usize = 1 + 1 + 32 + 32 + 32 + 32; // ignore last 32 bytes in instruction
+const LUNA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+const UST: &str = "0000000000000000000000000000000000000000000000000000000000000001";
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn migrate(_deps: DepsMut, _env: Env, _msg: MigrateMsg) -> StdResult<Response> {
@@ -46,13 +48,13 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Deposit { incognito_addr } => try_deposit(deps, Balance::from(info.funds), incognito_addr),
+        ExecuteMsg::Deposit { incognito_addr } => try_deposit( Balance::from(info.funds), incognito_addr),
         ExecuteMsg::Withdraw { proof } => try_withdraw(deps, proof),
         ExecuteMsg::Receive(msg) => execute_receive(deps, _env, info, msg),
     }
 }
 
-pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<Response, ContractError> {
+pub fn try_deposit(amount: Balance, incognito: String) -> Result<Response, ContractError> {
     // detect token deposit and emit event
     let (token, amount) = match &amount {
         Balance::Native(have) => {
@@ -60,18 +62,12 @@ pub fn try_deposit(deps: DepsMut, amount: Balance, incognito: String) -> Result<
                 0 => Err(ContractError::NoFunds {}),
                 1 => {
                     let balance = &have.0[0];
-                    let is_exist = NATIVE_TOKENS.may_load(deps.storage, &balance.clone().denom)?.unwrap_or_default();
-                    // check native token existed
-                    if is_exist == 0 {
-                        let total_native = TOTAL_NATIVE_TOKENS.may_load(deps.storage)?.unwrap_or_default();
-                        NATIVE_TOKENS.update(deps.storage, &balance.clone().denom, |_| -> StdResult<_> {
-                            Ok(1)
-                        })?;
-                        TOTAL_NATIVE_TOKENS.update(deps.storage, |_| -> StdResult<_> {
-                            Ok(total_native.checked_add(Uint128::new(1))?)
-                        })?;
-                    }
-                    Ok((balance.clone().denom, balance.amount))
+                    let p_token = match balance.denom.as_str() {
+                        "uluna" => Ok(LUNA),
+                        "uust" => Ok(UST),
+                        _ => Err(ContractError::InvalidNativeToken {})
+                    }?;
+                    Ok((p_token.to_string(), balance.amount))
                 }
                 _ => Err(ContractError::OneTokenAtATime {}),
             }
@@ -177,6 +173,7 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
         None => Ok(1),
     })?;
 
+    // todo: convert to bench32
     let token_addr = hex::encode(token);
     let recipient_str = hex::encode(receiver_key);
     let is_native: u8 = NATIVE_TOKENS.may_load(deps.storage, &token_addr)?.unwrap_or_default();
@@ -226,7 +223,7 @@ pub fn execute_receive(
 
     match msg {
         ReceiveMsg::Deposit {} => {
-            try_deposit( deps,balance, wrapper.msg.to_string())
+            try_deposit( balance, wrapper.msg.to_string())
         }
     }
 }
@@ -332,18 +329,6 @@ pub fn query_tx_burn(deps: Deps, txburn: &str) -> StdResult<TxBurnResponse> {
     Ok(TxBurnResponse { is_used: res })
 }
 
-// get total native tokens
-pub fn query_total_native(deps: Deps) -> StdResult<TotalNativeResponse> {
-    let res = TOTAL_NATIVE_TOKENS.may_load(deps.storage)?.unwrap_or_default();
-    Ok(TotalNativeResponse { result: res })
-}
-
-// get private external token for native tokens
-pub fn query_native_ptoken(deps: Deps, native_token: &str) -> StdResult<PtokenResponse> {
-    let res = NATIVE_TOKENS.may_load(deps.storage, native_token)?.unwrap_or_default();
-    Ok(PtokenResponse { result: res })
-}
-
 #[cfg(test)]
 mod tests {
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
@@ -353,8 +338,8 @@ mod tests {
     const HEIGHT_1: Uint128 = Uint128::new(0);
     const INCOGNITO_ADDRESS: &str = "Address1";
     const USER1: &str = "user1";
-    const DENOM: &str = "shield";
-    const DENOM1: &str = "shield2";
+    const DENOM: &str = "uluna";
+    const DENOM1: &str = "uust";
     const SHIELD_AMOUNT: u128 = 1_000_000_000;
     const CW20_ADDRESS: &str = "wasm1234567890";
 
@@ -417,32 +402,12 @@ mod tests {
         let res = query_beacon(deps.as_ref(), HEIGHT_1).unwrap();
         assert_eq!(res.beacons, beacons);
 
-        let mut total_native_token = query_total_native(deps.as_ref()).unwrap();
-        assert_eq!(0, total_native_token.result.u128());
-
-        let mut ptoken = query_native_ptoken(deps.as_ref(), DENOM).unwrap();
-        assert_eq!(ptoken.result, 0);
-
         // test deposit native tokens
         deposit_native(deps.as_mut(), SHIELD_AMOUNT, DENOM.to_string());
-        total_native_token = query_total_native(deps.as_ref()).unwrap();
-        assert_eq!(1, total_native_token.result.u128());
-        ptoken = query_native_ptoken(deps.as_ref(), DENOM).unwrap();
-        assert_eq!(ptoken.result, 1);
-
-        ptoken = query_native_ptoken(deps.as_ref(), DENOM1).unwrap();
-        assert_eq!(ptoken.result, 0);
-
         deposit_native(deps.as_mut(), SHIELD_AMOUNT, DENOM1.to_string());
-        total_native_token = query_total_native(deps.as_ref()).unwrap();
-        assert_eq!(2, total_native_token.result.u128());
-        ptoken = query_native_ptoken(deps.as_ref(), DENOM1).unwrap();
-        assert_eq!(ptoken.result, 1);
 
         // test deposit tokens
         deposit_cw20(deps.as_mut(), SHIELD_AMOUNT);
-        total_native_token = query_total_native(deps.as_ref()).unwrap();
-        assert_eq!(2, total_native_token.result.u128());
     }
 
     #[test]

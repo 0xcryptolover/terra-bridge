@@ -44,4 +44,7 @@ pub enum ContractError {
 
     #[error("Invalid beacon heights")]
     InvalidBeaconHeights {},
+
+    #[error("Native token not supported")]
+    InvalidNativeToken {},
 }
