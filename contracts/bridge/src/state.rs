@@ -5,5 +5,3 @@ pub const BEACONS: Map<&[u8], Vec<String>> = Map::new("beacons");
 // ascending list
 pub const BEACON_HEIGHTS: Item<Vec<Uint128>> = Item::new("heights");
 pub const BURNTX: Map<&str, u8> = Map::new("burntx");
-pub const NATIVE_TOKENS: Map<&str, u8> = Map::new("tokens");
-pub const TOTAL_NATIVE_TOKENS: Item<Uint128> = Item::new("total");

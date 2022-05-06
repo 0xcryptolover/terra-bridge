@@ -7,16 +7,20 @@ use std::convert::{TryFrom};
 use crate::error::ContractError;
 use crate::msg::{BeaconResponse, ExecuteMsg, InstantiateMsg, QueryMsg, ReceiveMsg, TxBurnResponse, UnshieldRequest, MigrateMsg};
 use cw20::{Balance, Cw20ReceiveMsg, Cw20CoinVerified, Cw20ExecuteMsg};
-use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX, NATIVE_TOKENS, TOTAL_NATIVE_TOKENS};
+use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX};
 use sha3::{Digest, Keccak256};
 use arrayref::{array_refs, array_ref};
+use bech32::{self, FromBase32, ToBase32, Variant};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:bridge";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEN: usize = 1 + 1 + 32 + 32 + 32 + 32; // ignore last 32 bytes in instruction
-const LUNA: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-const UST: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+const DENOM_LUNA: &str = "uluna";
+const DENOM_UST: &str = "uust";
+const LUNA: &str = "0000000000000000000000000000000000000000";
+const UST: &str = "0000000000000000000000000000000000000001";
+const PLATFORM_PREFIX: &str = "terra";
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn migrate(_deps: DepsMut, _env: Env, _msg: MigrateMsg) -> StdResult<Response> {
@@ -31,7 +35,6 @@ pub fn instantiate(
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(0))?;
     BEACONS.save(deps.storage, &msg.height.to_be_bytes()[..], &msg.committees)?;
     BEACON_HEIGHTS.save(deps.storage, &vec![msg.height])?;
     Ok(Response::new()
@@ -63,8 +66,8 @@ pub fn try_deposit(amount: Balance, incognito: String) -> Result<Response, Contr
                 1 => {
                     let balance = &have.0[0];
                     let p_token = match balance.denom.as_str() {
-                        "uluna" => Ok(LUNA),
-                        "uust" => Ok(UST),
+                        DENOM_LUNA => Ok(LUNA),
+                        DENOM_UST => Ok(UST),
                         _ => Err(ContractError::InvalidNativeToken {})
                     }?;
                     Ok((p_token.to_string(), balance.amount))
@@ -73,7 +76,12 @@ pub fn try_deposit(amount: Balance, incognito: String) -> Result<Response, Contr
             }
         },
         Balance::Cw20(have) => {
-            Ok((have.address.clone().into_string(), have.amount))
+            let (prefix, address_bytes, _) = bech32::decode(have.address.as_str()).unwrap();
+            if prefix != PLATFORM_PREFIX {
+                return Err(ContractError::InvalidPlatform {});
+            }
+            let decode_vec = Vec::<u8>::from_base32(&address_bytes).unwrap();
+            Ok((hex::encode(decode_vec), have.amount))
         }
     }?;
 
@@ -93,7 +101,9 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
         let (
         meta_type,
         shard_id,
+        _,
         token,
+        _,
         receiver_key,
         _,
         unshield_amount,
@@ -102,8 +112,10 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
          inst_,
          1,
          1,
-         32,
-         32,
+         12,
+         20,
+         12,
+         20,
          24,
          8,
          32
@@ -173,14 +185,23 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
         None => Ok(1),
     })?;
 
-    // todo: convert to bench32
-    let token_addr = hex::encode(token);
-    let recipient_str = hex::encode(receiver_key);
-    let is_native: u8 = NATIVE_TOKENS.may_load(deps.storage, &token_addr)?.unwrap_or_default();
+    let mut is_native = true;
+    let token_addr;
+    let token_hex_encode = hex::encode(token);
+    if token_hex_encode == LUNA.to_string() {
+        token_addr = DENOM_LUNA.to_string();
+    } else if token_hex_encode == UST.to_string() {
+        token_addr = DENOM_UST.to_string();
+    } else {
+        is_native = false;
+        token_addr = bech32::encode(PLATFORM_PREFIX, token.to_vec().to_base32(), Variant::Bech32).unwrap();
+    }
+
+    let recipient_str = bech32::encode(PLATFORM_PREFIX, receiver_key.to_vec().to_base32(), Variant::Bech32).unwrap();
     let amount_str: String = coin_to_string(unshield_amount, &token_addr);
     let message ;
     // transfer tokens
-    if is_native == 1 {
+    if is_native {
         let amount = coins(unshield_amount.u128(), token_addr.clone());
         message = SubMsg::new(BankMsg::Send {
             to_address: recipient_str.clone(),
@@ -192,7 +213,7 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
             amount: unshield_amount,
         };
         message = SubMsg::new(WasmMsg::Execute {
-            contract_addr: token_addr.clone(),
+            contract_addr: token_addr.to_string(),
             msg: to_binary( &transfer)?,
             funds: vec! [],
         })
@@ -341,7 +362,7 @@ mod tests {
     const DENOM: &str = "uluna";
     const DENOM1: &str = "uust";
     const SHIELD_AMOUNT: u128 = 1_000_000_000;
-    const CW20_ADDRESS: &str = "wasm1234567890";
+    const CW20_ADDRESS: &str = "terra140d6eravyz7x87u2cfh6yjl0jg8j5sddekq523";
 
     fn default_instantiate(deps: DepsMut) {
         let mut beacons: Vec<String> = vec![];

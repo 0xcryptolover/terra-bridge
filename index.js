@@ -15,14 +15,14 @@ const mk = new MnemonicKey({
     mnemonic: 'wink fringe review smart venture inflict climb usual dice vast mass dry coach announce awesome crew hair thrive virtual nephew ramp eye helmet together',
 });
 const wallet = lcd.wallet(mk);
-const pool = "terra140d6eravyz7x87u2cfh6yjl0jg8j5sddekq523"; // The LUNA/UST terraswap contract address on Bombay.
+const pool = "terra1w0pdn7wevqn9nfj2s0ce7q5re5l4p4cq7u5unx"; // The LUNA/UST terraswap contract address on Bombay.
 // call deposit native token
 const terraShield = new MsgExecuteContract(
     wallet.key.accAddress,
     pool,
     {
         deposit: {
-            incognito_addr: "thachyeucuong",
+            incognito_addr: "12sfD6DYsmYFGvZHbkmVhQiKyapWwshxKtMDZV51UFpXwaauCZ7Zyp69ctAQo3BJdKpZeZhVkFfCd8BgT6n4sMuRAhszpJ6pbwXct3Mr5kvCzDEgBz7h9mgoGuqwt83CjLCDuX7b7hP6gf9RWuPb",
         }
     },
     new Coins({ uluna: '100000' })

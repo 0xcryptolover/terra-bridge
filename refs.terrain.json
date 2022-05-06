@@ -1,9 +1,9 @@
 {
   "testnet": {
     "bridge": {
-      "codeId": "70202",
+      "codeId": "70240",
       "contractAddresses": {
-        "default": "terra140d6eravyz7x87u2cfh6yjl0jg8j5sddekq523"
+        "default": "terra1hzgsea6kq3hu76h5dkld248k0z8uh3e7aw87dd"
       }
     }
   }

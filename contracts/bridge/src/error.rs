@@ -47,4 +47,7 @@ pub enum ContractError {
 
     #[error("Native token not supported")]
     InvalidNativeToken {},
+
+    #[error("Invalid platform")]
+    InvalidPlatform {},
 }
