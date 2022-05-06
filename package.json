@@ -1,13 +1,32 @@
 {
-  "name": "my-terra-dapp",
+  "name": "bridge",
   "version": "1.0.0",
-  "description": "",
   "dependencies": {
-    "@terra-money/terrain": "0.2.0"
+    "@terra-money/terra.js": "^3.0.11",
+    "@terra-money/terrain": "0.2.0",
+    "isomorphic-fetch": "^3.0.0"
   },
+  "type": "module",
   "workspaces": [
     "frontend"
   ],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "main": "keys.terrain.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thachtb/terra-bridge.git"
+  },
+  "keywords": [],
+  "bugs": {
+    "url": "https://github.com/thachtb/terra-bridge/issues"
+  },
+  "homepage": "https://github.com/thachtb/terra-bridge#readme",
+  "description": ""
 }
