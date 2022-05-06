@@ -15,7 +15,7 @@ const mk = new MnemonicKey({
     mnemonic: 'wink fringe review smart venture inflict climb usual dice vast mass dry coach announce awesome crew hair thrive virtual nephew ramp eye helmet together',
 });
 const wallet = lcd.wallet(mk);
-const pool = "terra1w0pdn7wevqn9nfj2s0ce7q5re5l4p4cq7u5unx"; // The LUNA/UST terraswap contract address on Bombay.
+const pool = "terra1hzgsea6kq3hu76h5dkld248k0z8uh3e7aw87dd"; // The LUNA/UST terraswap contract address on Bombay.
 // call deposit native token
 const terraShield = new MsgExecuteContract(
     wallet.key.accAddress,
@@ -25,7 +25,7 @@ const terraShield = new MsgExecuteContract(
             incognito_addr: "12sfD6DYsmYFGvZHbkmVhQiKyapWwshxKtMDZV51UFpXwaauCZ7Zyp69ctAQo3BJdKpZeZhVkFfCd8BgT6n4sMuRAhszpJ6pbwXct3Mr5kvCzDEgBz7h9mgoGuqwt83CjLCDuX7b7hP6gf9RWuPb",
         }
     },
-    new Coins({ uluna: '100000' })
+    new Coins({ uusd: '100000' })
 );
 
 const tx = await wallet.createAndSignTx({ msgs: [terraShield] });
