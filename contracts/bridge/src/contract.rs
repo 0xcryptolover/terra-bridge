@@ -31,7 +31,7 @@ pub fn instantiate(
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     TOTAL_NATIVE_TOKENS.save(deps.storage, &Uint128::new(0))?;
     BEACONS.save(deps.storage, &msg.height.to_be_bytes()[..], &msg.committees)?;
-    BEACON_HEIGHTS.save(deps.storage, &vec![Uint128::new(msg.height)])?;
+    BEACON_HEIGHTS.save(deps.storage, &vec![msg.height])?;
     Ok(Response::new()
        .add_attribute("method", "instantiate")
        .add_attribute("owner", info.sender)
@@ -350,7 +350,7 @@ mod tests {
     use super::*;
 
     const BEACON_1: [&str; 2] = ["beacon1", "beacon2"];
-    const HEIGHT_1: u128 = 0;
+    const HEIGHT_1: Uint128 = Uint128::new(0);
     const INCOGNITO_ADDRESS: &str = "Address1";
     const USER1: &str = "user1";
     const DENOM: &str = "shield";
@@ -398,7 +398,7 @@ mod tests {
         default_instantiate(deps.as_mut());
 
         // it worked, let's query the state
-        let res = query_beacon(deps.as_ref(), Uint128::new(HEIGHT_1)).unwrap();
+        let res = query_beacon(deps.as_ref(), HEIGHT_1).unwrap();
         let mut beacons: Vec<String> = vec![];
         for i in 0..BEACON_1.len() {
             beacons.push(BEACON_1[i].to_string());
@@ -414,7 +414,7 @@ mod tests {
         for i in 0..BEACON_1.len() {
             beacons.push(BEACON_1[i].to_string());
         }
-        let res = query_beacon(deps.as_ref(), Uint128::new(HEIGHT_1)).unwrap();
+        let res = query_beacon(deps.as_ref(), HEIGHT_1).unwrap();
         assert_eq!(res.beacons, beacons);
 
         let mut total_native_token = query_total_native(deps.as_ref()).unwrap();
