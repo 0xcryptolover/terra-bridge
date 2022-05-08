@@ -50,4 +50,10 @@ pub enum ContractError {
 
     #[error("Invalid platform")]
     InvalidPlatform {},
+
+    #[error("Overflow")]
+    OverFlow {},
+
+    #[error("Math error")]
+    MathError (String),
 }

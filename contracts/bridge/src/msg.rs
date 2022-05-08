@@ -29,7 +29,9 @@ pub enum ExecuteMsg {
 #[serde(rename_all = "snake_case")]
 pub enum ReceiveMsg {
     /// Only valid cw20 message is to shield cw20 token
-    Deposit {},
+    Deposit {
+        incognito_addr: String
+    },
 }
 
 /// Reserve liquidity

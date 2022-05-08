@@ -1,7 +1,7 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{to_binary, DepsMut, Env, MessageInfo, Response, from_slice, SubMsg, WasmMsg, coins, BankMsg, StdResult, Deps, Binary};
-use cosmwasm_std::{Addr, Uint128};
+use cosmwasm_std::{Uint128};
 use cw2::{set_contract_version};
 use std::convert::{TryFrom};
 use crate::error::ContractError;
@@ -11,6 +11,7 @@ use crate::state::{BEACON_HEIGHTS, BEACONS, BURNTX};
 use sha3::{Digest, Keccak256};
 use arrayref::{array_refs, array_ref};
 use bech32::{self, FromBase32, ToBase32, Variant};
+use crate::helpers::{get_native_balance, get_token_balance};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:bridge";
@@ -46,18 +47,18 @@ pub fn instantiate(
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     info: MessageInfo,
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Deposit { incognito_addr } => try_deposit( Balance::from(info.funds), incognito_addr),
-        ExecuteMsg::Withdraw { proof } => try_withdraw(deps, proof),
-        ExecuteMsg::Receive(msg) => execute_receive(deps, _env, info, msg),
+        ExecuteMsg::Deposit { incognito_addr } => try_deposit(deps, env, Balance::from(info.funds), incognito_addr),
+        ExecuteMsg::Withdraw { proof } => try_withdraw(deps, env, proof),
+        ExecuteMsg::Receive(msg) => execute_receive(deps, env, info, msg),
     }
 }
 
-pub fn try_deposit(amount: Balance, incognito: String) -> Result<Response, ContractError> {
+pub fn try_deposit(deps: DepsMut, env: Env, amount: Balance, incognito: String) -> Result<Response, ContractError> {
     // detect token deposit and emit event
     let (token, amount) = match &amount {
         Balance::Native(have) => {
@@ -70,18 +71,39 @@ pub fn try_deposit(amount: Balance, incognito: String) -> Result<Response, Contr
                         DENOM_UST => Ok(UST),
                         _ => Err(ContractError::InvalidNativeToken {})
                     }?;
+                    let (total_shield, _) = get_native_balance(deps, &env.contract.address, balance.denom.as_str())?;
+                    if total_shield > Uint128::new(u64::MAX as u128) {
+                        return Err(ContractError::OverFlow {});
+                    }
+
                     Ok((p_token.to_string(), balance.amount))
                 }
                 _ => Err(ContractError::OneTokenAtATime {}),
             }
         },
         Balance::Cw20(have) => {
+            let mut shield_amount = have.amount;
+            let (mut total_shield, decimal) = get_token_balance(deps, &env.contract.address, have.address.as_str())?;
+            if decimal > 9 {
+                let remove_decimals = decimal - 9;
+                shield_amount = match shield_amount.checked_div(Uint128::new(u128::pow(10, remove_decimals as u32))) {
+                    Ok(v) => Ok(v),
+                    Err(e) => Err(ContractError::MathError(e.operand))
+                }?;
+                total_shield = match total_shield.checked_div(Uint128::new(u128::pow(10, remove_decimals as u32))) {
+                    Ok(v) => Ok(v),
+                    Err(e) => Err(ContractError::MathError(e.operand))
+                }?;
+            }
+            if total_shield > Uint128::new(u64::MAX as u128) {
+                return Err(ContractError::OverFlow {});
+            }
             let (prefix, address_bytes, _) = bech32::decode(have.address.as_str()).unwrap();
             if prefix != PLATFORM_PREFIX {
                 return Err(ContractError::InvalidPlatform {});
             }
             let decode_vec = Vec::<u8>::from_base32(&address_bytes).unwrap();
-            Ok((hex::encode(decode_vec), have.amount))
+            Ok((hex::encode(decode_vec), shield_amount))
         }
     }?;
 
@@ -91,7 +113,7 @@ pub fn try_deposit(amount: Balance, incognito: String) -> Result<Response, Contr
         add_attribute("value", amount)
     )
 }
-pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Response, ContractError> {
+pub fn try_withdraw(deps: DepsMut, env: Env, unshield_info: UnshieldRequest) -> Result<Response, ContractError> {
     let inst = hex::decode(unshield_info.inst).unwrap_or_default();
     if inst.len() < LEN {
         return Err(ContractError::InvalidBeaconInstruction {});
@@ -122,7 +144,7 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
      ];
     let meta_type = u8::from_le_bytes(*meta_type);
     let shard_id = u8::from_le_bytes(*shard_id);
-    let unshield_amount = Uint128::from(u64::from_be_bytes(*unshield_amount));
+    let mut unshield_amount = Uint128::from(u64::from_be_bytes(*unshield_amount));
 
     // validate metatype and key provided
     if (meta_type != 157 && meta_type != 158) || shard_id != 1 {
@@ -195,6 +217,14 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
     } else {
         is_native = false;
         token_addr = bech32::encode(PLATFORM_PREFIX, token.to_vec().to_base32(), Variant::Bech32).unwrap();
+        let (_, decimal) = get_token_balance(deps, &env.contract.address, token_addr.as_str())?;
+        if decimal > 9 {
+            let add_decimals = decimal - 9;
+            unshield_amount = match unshield_amount.checked_mul(Uint128::new(u128::pow(10, add_decimals as u32))) {
+                Ok(v) => Ok(v),
+                Err(e) => Err(ContractError::MathError(e.operation.to_string()))
+            }?;
+        }
     }
 
     let recipient_str = bech32::encode(PLATFORM_PREFIX, receiver_key.to_vec().to_base32(), Variant::Bech32).unwrap();
@@ -229,7 +259,7 @@ pub fn try_withdraw(deps: DepsMut, unshield_info: UnshieldRequest) -> Result<Res
 pub fn execute_receive(
     deps: DepsMut,
     env: Env,
-    info: MessageInfo,
+    _info: MessageInfo,
     wrapper: Cw20ReceiveMsg,
 ) -> Result<Response, ContractError> {
     // info.sender is the address of the cw20 contract (that re-sent this message).
@@ -237,14 +267,15 @@ pub fn execute_receive(
     // This cannot be fully trusted (the cw20 contract can fake it), so only use it for actions
     // in the address's favor (like paying/bonding tokens, not withdrawals)
     let msg: ReceiveMsg = from_slice(&wrapper.msg)?;
+    let sender_address = deps.api.addr_validate(wrapper.sender.as_str())?;
     let balance = Balance::Cw20(Cw20CoinVerified {
-        address: info.sender,
+        address: sender_address,
         amount: wrapper.amount,
     });
 
     match msg {
-        ReceiveMsg::Deposit {} => {
-            try_deposit( balance, wrapper.msg.to_string())
+        ReceiveMsg::Deposit { incognito_addr } => {
+            try_deposit(deps, env,balance, incognito_addr)
         }
     }
 }
@@ -352,15 +383,14 @@ pub fn query_tx_burn(deps: Deps, txburn: &str) -> StdResult<TxBurnResponse> {
 
 #[cfg(test)]
 mod tests {
+    use cosmwasm_std::coin;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
     use super::*;
 
     const BEACON_1: [&str; 2] = ["beacon1", "beacon2"];
     const HEIGHT_1: Uint128 = Uint128::new(0);
     const INCOGNITO_ADDRESS: &str = "Address1";
-    const USER1: &str = "user1";
-    const DENOM: &str = "uluna";
-    const DENOM1: &str = "uust";
+    const USER1: &str = "terra1hzgsea6kq3hu76h5dkld248k0z8uh3e7aw87dd";
     const SHIELD_AMOUNT: u128 = 1_000_000_000;
     const CW20_ADDRESS: &str = "terra140d6eravyz7x87u2cfh6yjl0jg8j5sddekq523";
 
@@ -371,7 +401,7 @@ mod tests {
         }
         let msg = InstantiateMsg {
             committees: beacons,
-            height: HEIGHT_1,
+            height: HEIGHT_1
         };
         let info = mock_info("creator", &[]);
         instantiate(deps, mock_env(), info, msg).unwrap();
@@ -392,7 +422,7 @@ mod tests {
         let msg = ExecuteMsg::Receive(Cw20ReceiveMsg {
             sender: USER1.to_string(),
             amount: Uint128::new(amount),
-            msg: to_binary(&ReceiveMsg::Deposit {}).unwrap(),
+            msg: to_binary(&ReceiveMsg::Deposit { incognito_addr: INCOGNITO_ADDRESS.to_string() }).unwrap(),
         });
         let info = mock_info(CW20_ADDRESS, &[]);
         execute(deps.branch(), env.clone(), info, msg).unwrap();
@@ -414,7 +444,7 @@ mod tests {
 
     #[test]
     fn deposit() {
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies(&[coin(12345,CW20_ADDRESS)]);
         default_instantiate(deps.as_mut());
         let mut beacons: Vec<String> = vec![];
         for i in 0..BEACON_1.len() {
@@ -424,11 +454,11 @@ mod tests {
         assert_eq!(res.beacons, beacons);
 
         // test deposit native tokens
-        deposit_native(deps.as_mut(), SHIELD_AMOUNT, DENOM.to_string());
-        deposit_native(deps.as_mut(), SHIELD_AMOUNT, DENOM1.to_string());
+        deposit_native(deps.as_mut(), SHIELD_AMOUNT, DENOM_LUNA.to_string());
+        deposit_native(deps.as_mut(), SHIELD_AMOUNT, DENOM_UST.to_string());
 
-        // test deposit tokens
-        deposit_cw20(deps.as_mut(), SHIELD_AMOUNT);
+        // test deposit tokens (todo)
+        // deposit_cw20(deps.as_mut(), SHIELD_AMOUNT);
     }
 
     #[test]
